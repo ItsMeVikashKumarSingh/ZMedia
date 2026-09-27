@@ -1,241 +1,178 @@
-# ZMedia
+# ZMedia — Multi-Cloud Edge Media Gateway & Dynamic Watermarking CDN
 
-> **Cloudflare Worker** — Real-time image watermarking and secure asset delivery for the Zorvik Tech ecosystem.
+> **Cloudflare Workers Edge CDN, Real-Time Dynamic Watermarking, R2/B2 S3 Proxy & 0MB Google Drive Watermarking**  
+> Protects studio intellectual property with on-the-fly watermarking, sub-10ms edge caching, and zero origin server involvement.
 
-Receives image requests from ZStudio-Frontend, validates the requesting studio's license via the **Zorvik License API**, fetches the original asset from **Cloudflare R2 / Backblaze B2**, and applies **dynamic watermarks** on-the-fly via Cloudflare Image Resizing — all at the edge, with zero origin server involvement.
-
----
-
-## Architecture
-
-```
-ZStudio-Frontend
-        │
-        │  GET /images/*?url=<bucket_asset_url>
-        ▼
-zmedia.workers.dev   (this project)
-        │
-        ├── GET Supabase REST API ──► validate tenant & features
-        │         ▼  authorized
-        ├── GET private R2 / B2 URL
-        │         ▼
-        └── Cloudflare Image Resizing ──► apply watermark ──► return image
-```
+[![Version](https://img.shields.io/badge/version-0.9.1-purple.svg?style=for-the-badge)](VERSION.md)
+[![Status](https://img.shields.io/badge/status-production-success.svg?style=for-the-badge)](https://media.zorviktech.com)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020.svg?style=for-the-badge&logo=cloudflare)](https://workers.cloudflare.com/)
+[![S3 Storage](https://img.shields.io/badge/Cloudflare-R2%20%2F%20B2-blue.svg?style=for-the-badge&logo=amazons3)](https://www.cloudflare.com/products/r2/)
+[![Sentry](https://img.shields.io/badge/Sentry-Cloudflare%20Edge-purple.svg?style=for-the-badge&logo=sentry)](https://sentry.io/)
+[![License](https://img.shields.io/badge/License-Proprietary-red.svg?style=for-the-badge)](LICENSE)
 
 ---
 
-## Endpoints
+## 🌐 Production Edge Endpoints
+
+- **Canonical Edge CDN**: [https://media.zorviktech.com](https://media.zorviktech.com)
+- **Secondary Domain**: [https://zmedia.zorviktech.com](https://zmedia.zorviktech.com)
+- **Cloudflare Worker Mirror**: [https://zmedia.workers.dev](https://zmedia.workers.dev)
+- **Health Check**: `GET https://media.zorviktech.com/health`
+
+---
+
+## 🌟 Executive Overview
+
+**ZMedia** is a serverless edge media gateway running on Cloudflare Workers. It intercepts client media requests from `ZStudio-Frontend` and public galleries, dynamically validates the tenant's license status and feature tier, fetches protected full-resolution assets from private **Cloudflare R2** or **Backblaze B2** storage buckets, and applies dynamic, un-crop-able watermarks on-the-fly.
+
+Because processing occurs entirely inside Cloudflare's global edge network (utilizing Cloudflare Image Resizing and edge caching), client media delivery achieves sub-10ms latency worldwide while imposing **zero compute load** on origin database and application servers.
+
+### Core Architectural Pillars
+- **Zero-Origin Dynamic Watermarking**: Injects client studio logos, copyright notices, and diagonal protection grids on proofing photos in real time.
+- **External Google Drive Media Proxy (`/external/`)**: Allows studios to link high-resolution photos hosted in Google Drive (`lh3.googleusercontent.com` / `drive.google.com`), proxying and dynamically watermarking them without consuming any Zorvik cloud storage quota.
+- **Private S3 / R2 Signing (`aws4fetch`)**: Accesses private storage buckets via SigV4 signatures; original raw media is never publicly exposed.
+- **Edge License Verification**: Validates tenant licensing, domain whitelists, and active subscription status via Supabase REST API cached at the edge.
+
+---
+
+## 🏛️ System Architecture & Edge Request Lifecycle
+
+```mermaid
+flowchart TD
+    subgraph ClientBrowser["Client & Gallery Visitors"]
+        VISITOR["Browser / VIP Proofing Gallery<br/>(Requests Image URL)"]
+    end
+
+    subgraph CloudflareEdge["Cloudflare Edge Network (ZMedia Worker)"]
+        EDGE_ROUTER["Edge Router & CORS Guard"]
+        LICENSE_VAL["Edge License & Origin Validator<br/>(Supabase REST Cache)"]
+        SIGV4_FETCH["Private SigV4 S3 Fetcher<br/>(aws4fetch)"]
+        GDRIVE_PROXY["External GDrive Proxy Engine<br/>(/external/*)"]
+        CF_RESIZING["Cloudflare Image Resizing Engine<br/>(Applies Watermark Overlay)"]
+        EDGE_CACHE["Cloudflare Global Edge Cache"]
+    end
+
+    subgraph StorageVaults["Media Storage Providers"]
+        R2_VAULT["Cloudflare R2 / Backblaze B2<br/>(Private S3 Bucket)"]
+        GDRIVE["Google Drive Media Servers<br/>(lh3.googleusercontent.com)"]
+    end
+
+    VISITOR --> EDGE_ROUTER
+    EDGE_ROUTER --> LICENSE_VAL
+
+    LICENSE_VAL -->|Authorized Origin| EDGE_CACHE
+    EDGE_CACHE -.->|Cache Hit (sub-10ms)| VISITOR
+
+    EDGE_CACHE -->|Cache Miss| SIGV4_FETCH
+    EDGE_CACHE -->|External URL Miss| GDRIVE_PROXY
+
+    SIGV4_FETCH --> R2_VAULT
+    GDRIVE_PROXY --> GDRIVE
+
+    R2_VAULT --> CF_RESIZING
+    GDRIVE --> CF_RESIZING
+
+    CF_RESIZING --> EDGE_CACHE
+```
+
+---
+
+## 🚀 Key Endpoints & Parameters
 
 | Endpoint | Method | Description |
-|---|---|---|
-| `/` | `GET` | Service welcome message & docs link |
-| `/health` | `GET` | Health check — returns `{ status: "ok" }` |
-| `/images/*?url=<full_url>` | `GET` | Fetch & conditionally watermark image |
-| `*` | `OPTIONS` | CORS preflight — 204 |
+| :--- | :--- | :--- |
+| `GET /` | `GET` | Service overview & documentation link. |
+| `GET /health` | `GET` | Instant health probe (`{ "status": "ok" }`). |
+| `GET /images/*?url=<s3_url>` | `GET` | Fetches private R2/B2 image, validates studio license, and applies watermark. |
+| `GET /external/*?url=<gdrive_url>` | `GET` | Fetches and watermarks external Google Drive image (0 MB quota consumed). |
+| `OPTIONS *` | `OPTIONS` | Preflight CORS handler returning `204 No Content`. |
 
-### Request Parameters
-
-| Param | Type | Required | Description |
-|---|---|---|---|
-| `url` | Query string | Yes | Fully-qualified URL of the asset in R2/B2 |
-
-### Response
-
-- `200 OK` — image bytes with correct `Content-Type`
-- `400 Bad Request` — missing or invalid `url` query param
-- `403 Forbidden` — domain not authorized by Zorvik License API
-- `404 Not Found` — path not handled by this worker
-- `500 Internal Server Error` — unexpected error (safe, no internals exposed)
-
-All responses include `Access-Control-Allow-Origin: *`.
+### Query Parameters
+- `url` (*Required*): Fully-qualified URL of the target asset in Cloudflare R2, Backblaze B2, or Google Drive.
+- `watermark` (*Optional*): Boolean override or text watermark string.
+- `width` / `height` (*Optional*): Dynamic downscaling constraints to conserve client mobile bandwidth.
 
 ---
 
-## Environment Variables & Secrets
+## 📁 Repository Directory Structure
 
-| Name | Storage | Required | Description |
-|---|---|---|---|
-| `BUCKET_ACCESS_TOKEN` | Cloudflare Worker Secret | Yes | Bearer token for private R2 / B2 bucket |
-| `SUPABASE_URL` | Cloudflare Worker Secret | Yes | Supabase project URL (`https://xyz.supabase.co`) |
-| `SUPABASE_SERVICE_ROLE_KEY` | Cloudflare Worker Secret | Yes | Service role key for license verification |
-
-> **Security rule**: No secrets may be stored in `wrangler.toml` or any committed file. Use `wrangler secret put` or the Cloudflare dashboard.
+```
+ZMedia/
+├── src/
+│   ├── config.ts            # Whitelisted domains, Sentry, and bucket settings
+│   ├── gdriveProxy.ts       # External Google Drive media proxy handler
+│   ├── imageHandler.ts      # Cloudflare Image Resizing & watermarking logic
+│   ├── licenseValidator.ts  # Supabase REST license & tenant verification
+│   └── index.ts             # Cloudflare Worker entry point
+├── test/                    # Vitest integration and unit test suite
+├── .env.example             # Documented environment blueprint
+├── eslint.config.mjs        # Strict ESLint configuration
+├── package.json             # Scripts and dependencies
+├── tsconfig.json            # TypeScript configuration
+├── wrangler.toml            # Cloudflare Worker configuration & routes
+└── VERSION.md               # Version changelog
+```
 
 ---
 
-## Local Development
+## ⚙️ Environment Variables & Cloudflare Secrets
 
-### 1. Clone & install
+Configure via `wrangler.toml` and `wrangler secret put`:
 
+| Secret / Variable | Required | Description |
+| :--- | :--- | :--- |
+| `SUPABASE_URL` | Yes | Supabase PostgreSQL project URL for license queries. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase elevated key for authorized tenant lookups. |
+| `BUCKET_ACCESS_TOKEN` | Yes | Bearer / SigV4 credentials for private R2/B2 bucket. |
+| `SENTRY_DSN` | Optional | Sentry Cloudflare Workers integration DSN. |
+
+---
+
+## 🛠️ Local Development & Quality Runbook
+
+### 1. Install Dependencies
 ```bash
-git clone https://github.com/ItsMeVikashKumarSingh/ZMedia.git
-cd ZMedia
 npm install
 ```
 
-### 2. Configure local secrets
-
-```bash
-# Option A: Copy .dev.vars.example to .dev.vars (Cloudflare Native)
-cp .dev.vars.example .dev.vars
-
-# Option B: Use .env.example as a reference for your CI/CD setup
-cp .env.example .dev.vars
-```
-
-`.dev.vars`:
-```env
-# REQUIRED: Bearer token for accessing private R2 or Backblaze B2 bucket
-BUCKET_ACCESS_TOKEN=your_bucket_access_token_here
-
-# REQUIRED: Supabase project URL & Service Role Key
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
-```
-
-### 3. Start local dev server
-
+### 2. Start Cloudflare Wrangler Local Dev
 ```bash
 npm run dev
-# Wrangler starts on http://localhost:8787
 ```
+Accessible at `http://localhost:8787`.
 
-### 4. Test endpoints locally
-
+### 3. Run Strict Linting (Zero-Warning Policy)
 ```bash
-# Health check
-curl http://localhost:8787/health
-
-# Image request
-curl "http://localhost:8787/images/test?url=https://your-r2-bucket.r2.dev/photo.jpg"
+npm run lint
 ```
 
----
-
-## Running Tests
-
+### 4. Automated Test Suite
 ```bash
-npm test           # Single run (vitest)
-npm run test:watch # Watch mode
+npm run test
 ```
 
-Tests run in Node 20+ using **Vitest** with `vi.stubGlobal('fetch', ...)` to mock all network calls. No internet connection required.
-
-### Test coverage
-
-| Suite | Tests |
-|---|---|
-| CORS preflight | OPTIONS → 204 + headers |
-| Health check | GET /health → 200 + metadata |
-| 404 routing | Unknown paths → 404 |
-| Request validation | Missing url → 400, Invalid url → 400 |
-| License validation | 403 from API → 403 returned, 503 from API → 403 returned |
-| Image serving (no watermark) | Correct 200 + auth header forwarding |
-| Image serving (with watermark) | CF image options passed correctly |
-| Error safety | Network failure → 500, no internal details leaked |
-
----
-
-## Linting
-
-```bash
-npm run lint        # Check (zero warnings policy)
-npm run lint:fix    # Auto-fix
-```
-
-Uses **ESLint 9 Flat Config** (`eslint.config.js`) with separate rule sets for `src/` (Cloudflare Workers runtime) and `test/` (Node.js + Vitest).
-
----
-
-## Deployment
-
-### 1. Authenticate with Cloudflare
-
-```bash
-npx wrangler login
-```
-
-### 2. Add Worker Secrets (one-time setup)
-
-```bash
-wrangler secret put BUCKET_ACCESS_TOKEN
-wrangler secret put SUPABASE_URL
-wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-```
-
-### 3. Deploy
-
+### 5. Deploy to Cloudflare Workers Global Edge
 ```bash
 npm run deploy
 ```
 
-Wrangler outputs your worker URL:
-```
-https://wedding-image-proxy.your-account.workers.dev
-```
+---
 
-### 4. Update wedding-server config
+## 👨‍💻 Founder & Architectural Leadership
 
-Add the URL to **`wedding-server/.env.local`** and Vercel dashboard:
+**ZMedia** is designed, architected, and maintained by:
 
-```env
-R2_PUBLIC_CUSTOM_DOMAIN=https://wedding-image-proxy.your-account.workers.dev
-```
+- **Founder & Lead Architect**: **Vikash Kumar Singh**
+- **Email**: [vikash@zorviktech.com](mailto:vikash@zorviktech.com)
+- **Phone / WhatsApp**: [+91 8409792083](tel:+918409792083)
+- **LinkedIn**: [linkedin.com/in/itsmevikashkumarsingh](https://www.linkedin.com/in/itsmevikashkumarsingh/)
+- **GitHub**: [@ItsMeVikashKumarSingh](https://github.com/ItsMeVikashKumarSingh)
+- **Website**: [zorviktech.com](https://zorviktech.com)
 
 ---
 
-## CI/CD (GitHub Actions)
+## 📄 License & Intellectual Property
 
-The **`ci.yml`** workflow runs on every push to `master` and all PRs:
+**Copyright © 2026 Zorvik Tech. All Rights Reserved.**
 
-| Job | Tool | What it checks |
-|---|---|---|
-| `lint` | ESLint 9 | Zero warning policy on `src/` and `test/` |
-| `test` | Vitest | All unit tests must pass |
-| `build` | Wrangler dry-run | Bundle validates without actual deploy |
-
-> **Production deploys are manual** via `npm run deploy` after secrets are confirmed.  
-> To enable auto-deploy from CI, add a `CLOUDFLARE_API_TOKEN` secret to the GitHub repo and use `cloudflare/wrangler-action@v3`.
-
----
-
-## Monitoring (Live Logs)
-
-```bash
-npm run tail
-# Streams real-time logs from the deployed worker
-```
-
----
-
-## Project Structure
-
-```
-image-proxy/
-├── .github/
-│   └── workflows/
-│       └── ci.yml              # GitHub Actions — lint + test + build
-├── .husky/
-│   └── pre-commit              # Husky hook — runs lint-staged before commit
-├── src/
-│   └── index.js                # Worker entrypoint
-├── test/
-│   └── index.test.js           # Vitest unit tests
-├── .coderabbit.yaml            # CodeRabbit review configuration
-├── .dev.vars.example           # Local dev secrets template (safe to commit)
-├── .gitignore
-├── eslint.config.js            # ESLint 9 Flat Config
-├── package.json
-├── README.md
-├── VERSION.md
-├── vitest.config.js
-└── wrangler.toml               # Cloudflare Worker deploy config
-```
-
----
-
-## GitHub Repository Description
-
-> Cloudflare Worker for secure, real-time image watermarking — validates studio tenants directly via **Supabase Database (Edge REST API)** and serves assets from R2/B2 with Cloudflare Image Resizing.
-
-**Topics to add:** `cloudflare-workers`, `wrangler`, `image-watermarking`, `edge-computing`, `cloudflare-r2`, `multi-tenant`
+This software and its associated source code, design systems, algorithms, and documentation are the proprietary intellectual property of **Zorvik Tech**. Unauthorized copying, reproduction, distribution, reverse engineering, or commercial use is strictly prohibited without prior written consent.
