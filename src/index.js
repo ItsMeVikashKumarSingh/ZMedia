@@ -444,10 +444,9 @@ async function handleStorageOverview(env) {
   }
 
   // 2. Scan R2 & B2 buckets in parallel
-  const [r2GalleryObjects, r2SiteObjects, b2GalleryObjects, b2FilmsObjects, b2ReelsObjects, b2PrivateObjects] = await Promise.all([
+  const [r2GalleryObjects, r2SiteObjects, b2FilmsObjects, b2ReelsObjects, b2PrivateObjects] = await Promise.all([
     scanR2BucketObjects(env.BUCKET, ''),
     scanR2BucketObjects(env.SYSTEM_BUCKET, ''),
-    scanB2BucketObjects(env.B2_GALLERY_BUCKET || 'studio-public-gallery', '', env),
     scanB2BucketObjects(env.B2_FILMS_BUCKET || 'studio-public-films', '', env),
     scanB2BucketObjects(env.B2_REELS_BUCKET || 'studio-public-reels', '', env),
     scanB2BucketObjects(env.B2_PRIVATE_BUCKET || 'studio-private-deliverables', '', env),
@@ -481,7 +480,6 @@ async function handleStorageOverview(env) {
   r2GalleryObjects.forEach(processR2Item)
   r2SiteObjects.forEach(processR2Item)
 
-  b2GalleryObjects.forEach((item) => processB2Item(item, 'photos'))
   b2FilmsObjects.forEach((item) => processB2Item(item, 'films'))
   b2ReelsObjects.forEach((item) => processB2Item(item, 'reels'))
   b2PrivateObjects.forEach((item) => processB2Item(item, 'deliverables'))
@@ -519,7 +517,11 @@ async function handleStorageOverview(env) {
     const planData = primaryProject?.tbl_plans || {}
     const planFeatures = planData.tp_features || {}
     const overrides = primaryProject?.tcp_feature_overrides || {}
-    const baseStorageGb = Number(overrides.storage_gb) || Number(planFeatures.storage_gb) || 5
+    const baseStorageGb = (overrides.storage_gb !== undefined && overrides.storage_gb !== null)
+      ? Number(overrides.storage_gb) || 0
+      : (planFeatures.storage_gb !== undefined && planFeatures.storage_gb !== null)
+        ? Number(planFeatures.storage_gb) || 0
+        : (planFeatures.include_storage === false ? 0 : 0)
 
     let addonStorageGb = 0
     const projectAddons = primaryProject?.tcp_addons || []
@@ -596,10 +598,9 @@ async function handleStorageOverview(env) {
  * Centralized Storage Handler: GET /api/storage/tenant/:tenantId
  */
 async function handleTenantStorageDetails(tenantId, env) {
-  const [r2Gallery, r2Site, b2Gallery, b2Films, b2Reels, b2Private] = await Promise.all([
+  const [r2Gallery, r2Site, b2Films, b2Reels, b2Private] = await Promise.all([
     scanR2BucketObjects(env.BUCKET, `${tenantId}/`),
     scanR2BucketObjects(env.SYSTEM_BUCKET, `${tenantId}/`),
-    scanB2BucketObjects(env.B2_GALLERY_BUCKET || 'studio-public-gallery', `${tenantId}/`, env),
     scanB2BucketObjects(env.B2_FILMS_BUCKET || 'studio-public-films', `${tenantId}/`, env),
     scanB2BucketObjects(env.B2_REELS_BUCKET || 'studio-public-reels', `${tenantId}/`, env),
     scanB2BucketObjects(env.B2_PRIVATE_BUCKET || 'studio-private-deliverables', `${tenantId}/`, env),
@@ -624,7 +625,7 @@ async function handleTenantStorageDetails(tenantId, env) {
     r2Bytes,
     b2Bytes,
     counts: {
-      photos: r2Gallery.length + b2Gallery.length,
+      photos: r2Gallery.length,
       siteAssets: r2Site.length,
       films: b2Films.length,
       reels: b2Reels.length,

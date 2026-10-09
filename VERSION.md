@@ -1,3 +1,7 @@
+﻿## VERSION 0.9.2 (2026-10-10) - Pure S3 Physical Storage Scans & Plan Quota Reconciliation
+- **Physical Multi-Cloud Scan Decoupling**: Removed non-existent studio-public-gallery scans from Backblaze B2, enforcing exact separation where Cloudflare R2 holds gallery images and Backblaze B2 hosts private deliverables and video assets.
+- **Accurate Quota Calculation**: Resolved 5 GB fallback bug for non-storage projects; plans and project overrides with storage_gb: 0 or include_storage: false now strictly return 0 GB allocated.
+
 # ZMedia — Version History
 
 ## VERSION 0.9.1 (2026-09-26) - Documentation & Ecosystem Alignment
@@ -198,3 +202,4 @@
 ## VERSION 0.4.0 (2026-04-05) - Secure Upload Proxy
 - **Architecture**: Implemented **Secure Upload Proxying** (PUT /images/*).
 - **Infrastructure**: Upgraded to Wrangler v4 and fixed GitHub Actions deployment pipeline.
+
