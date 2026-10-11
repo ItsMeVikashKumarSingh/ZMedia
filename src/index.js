@@ -349,10 +349,12 @@ function parseS3ListXml(xmlText) {
     const block = match[1]
     const keyMatch = block.match(/<Key>(.*?)<\/Key>/)
     const sizeMatch = block.match(/<Size>(\d+)<\/Size>/)
+    const lastModifiedMatch = block.match(/<LastModified>(.*?)<\/LastModified>/)
     if (keyMatch && sizeMatch) {
       contents.push({
         Key: keyMatch[1],
         Size: parseInt(sizeMatch[1], 10),
+        LastModified: lastModifiedMatch ? lastModifiedMatch[1] : new Date().toISOString(),
       })
     }
   }
@@ -399,11 +401,41 @@ async function scanR2BucketObjects(r2Binding, prefix) {
   if (!r2Binding || typeof r2Binding.list !== 'function') return []
   try {
     const list = await r2Binding.list({ prefix: prefix || undefined, limit: 1000 })
-    return (list.objects || []).map((o) => ({ Key: o.key, Size: o.size }))
+    return (list.objects || []).map((o) => ({
+      Key: o.key,
+      Size: o.size,
+      LastModified: o.uploaded ? o.uploaded.toISOString() : new Date().toISOString(),
+    }))
   } catch (err) {
     console.warn('[scanR2BucketObjects] R2 scan error:', err)
     return []
   }
+}
+
+/**
+ * Infer media category and MIME type from object key extension.
+ */
+function inferMediaTypeAndMime(key) {
+  const ext = (key.split('.').pop() || '').toLowerCase()
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'avif'].includes(ext)) {
+    return {
+      mediaType: 'image',
+      mimeType: ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+    }
+  }
+  if (['mp4', 'mov', 'webm', 'mkv', 'avi'].includes(ext)) {
+    return {
+      mediaType: 'video',
+      mimeType: ext === 'mov' ? 'video/quicktime' : `video/${ext}`,
+    }
+  }
+  if (['pdf', 'zip', 'tar', 'gz', 'rar', '7z', 'csv', 'xlsx'].includes(ext)) {
+    return {
+      mediaType: 'deliverable',
+      mimeType: ext === 'pdf' ? 'application/pdf' : 'application/zip',
+    }
+  }
+  return { mediaType: 'raw', mimeType: 'application/octet-stream' }
 }
 
 /**
@@ -444,12 +476,13 @@ async function handleStorageOverview(env) {
   }
 
   // 2. Scan R2 & B2 buckets in parallel
-  const [r2GalleryObjects, r2SiteObjects, b2FilmsObjects, b2ReelsObjects, b2PrivateObjects] = await Promise.all([
+  const [r2GalleryObjects, r2SiteObjects, b2FilmsObjects, b2ReelsObjects, b2PrivateObjects, b2OtherObjects] = await Promise.all([
     scanR2BucketObjects(env.BUCKET, ''),
     scanR2BucketObjects(env.SYSTEM_BUCKET, ''),
     scanB2BucketObjects(env.B2_FILMS_BUCKET || 'studio-public-films', '', env),
     scanB2BucketObjects(env.B2_REELS_BUCKET || 'studio-public-reels', '', env),
     scanB2BucketObjects(env.B2_PRIVATE_BUCKET || 'studio-private-deliverables', '', env),
+    scanB2BucketObjects('studio-private', '', env),
   ])
 
   // Aggregate by tenantId
@@ -483,6 +516,7 @@ async function handleStorageOverview(env) {
   b2FilmsObjects.forEach((item) => processB2Item(item, 'films'))
   b2ReelsObjects.forEach((item) => processB2Item(item, 'reels'))
   b2PrivateObjects.forEach((item) => processB2Item(item, 'deliverables'))
+  b2OtherObjects.forEach((item) => processB2Item(item, 'deliverables'))
 
   let totalStorageBytes = 0
   let totalR2Bytes = 0
@@ -591,31 +625,125 @@ async function handleStorageOverview(env) {
     totalDeliverables,
   }
 
-  return { metrics, tenants: tenantSummaries }
+  return {
+    metrics,
+    tenants: tenantSummaries,
+    r2TenantBytesMap: Object.fromEntries(tenantR2Map),
+    b2TenantBytesMap: Object.fromEntries(tenantB2Map),
+  }
 }
 
 /**
  * Centralized Storage Handler: GET /api/storage/tenant/:tenantId
  */
 async function handleTenantStorageDetails(tenantId, env) {
-  const [r2Gallery, r2Site, b2Films, b2Reels, b2Private] = await Promise.all([
+  const [r2Gallery, r2Site, b2Films, b2Reels, b2Private, b2Other] = await Promise.all([
     scanR2BucketObjects(env.BUCKET, `${tenantId}/`),
     scanR2BucketObjects(env.SYSTEM_BUCKET, `${tenantId}/`),
     scanB2BucketObjects(env.B2_FILMS_BUCKET || 'studio-public-films', `${tenantId}/`, env),
     scanB2BucketObjects(env.B2_REELS_BUCKET || 'studio-public-reels', `${tenantId}/`, env),
     scanB2BucketObjects(env.B2_PRIVATE_BUCKET || 'studio-private-deliverables', `${tenantId}/`, env),
+    scanB2BucketObjects('studio-private', `${tenantId}/`, env),
   ])
 
-  let r2Bytes = 0
-  let b2Bytes = 0
+  let r2PhotosBytes = 0
+  let r2SiteAssetsBytes = 0
+  let b2FilmsBytes = 0
+  let b2ReelsBytes = 0
+  let b2DeliverablesBytes = 0
 
-  r2Gallery.forEach((item) => (r2Bytes += item.Size))
-  r2Site.forEach((item) => (r2Bytes += item.Size))
-  b2Gallery.forEach((item) => (b2Bytes += item.Size))
-  b2Films.forEach((item) => (b2Bytes += item.Size))
-  b2Reels.forEach((item) => (b2Bytes += item.Size))
-  b2Private.forEach((item) => (b2Bytes += item.Size))
+  const recentMedia = []
 
+  r2Gallery.forEach((item) => {
+    r2PhotosBytes += item.Size
+    const { mediaType, mimeType } = inferMediaTypeAndMime(item.Key)
+    recentMedia.push({
+      id: item.Key,
+      title: item.Key.split('/').pop() || 'Gallery Image',
+      objectKey: item.Key,
+      mediaType,
+      mimeType,
+      fileSizeBytes: item.Size,
+      provider: 'Cloudflare R2',
+      bucket: 'studio-public-gallery',
+      createdAt: item.LastModified || new Date().toISOString(),
+      url: `https://zmedia.zorviktech.com/images/${item.Key}`,
+    })
+  })
+
+  r2Site.forEach((item) => {
+    r2SiteAssetsBytes += item.Size
+    const { mediaType, mimeType } = inferMediaTypeAndMime(item.Key)
+    recentMedia.push({
+      id: item.Key,
+      title: item.Key.split('/').pop() || 'Site Asset',
+      objectKey: item.Key,
+      mediaType,
+      mimeType,
+      fileSizeBytes: item.Size,
+      provider: 'Cloudflare R2',
+      bucket: 'studio-site-assets',
+      createdAt: item.LastModified || new Date().toISOString(),
+      url: `https://zmedia.zorviktech.com/site/${item.Key}`,
+    })
+  })
+
+  b2Films.forEach((item) => {
+    b2FilmsBytes += item.Size
+    const { mediaType, mimeType } = inferMediaTypeAndMime(item.Key)
+    recentMedia.push({
+      id: item.Key,
+      title: item.Key.split('/').pop() || 'Master Film',
+      objectKey: item.Key,
+      mediaType: mediaType || 'video',
+      mimeType: mimeType === 'application/octet-stream' ? 'video/mp4' : mimeType,
+      fileSizeBytes: item.Size,
+      provider: 'Backblaze B2',
+      bucket: env.B2_FILMS_BUCKET || 'studio-public-films',
+      createdAt: item.LastModified || new Date().toISOString(),
+      url: `https://zmedia.zorviktech.com/films/${item.Key}`,
+    })
+  })
+
+  b2Reels.forEach((item) => {
+    b2ReelsBytes += item.Size
+    const { mediaType, mimeType } = inferMediaTypeAndMime(item.Key)
+    recentMedia.push({
+      id: item.Key,
+      title: item.Key.split('/').pop() || 'Reel Video',
+      objectKey: item.Key,
+      mediaType: mediaType || 'video',
+      mimeType: mimeType === 'application/octet-stream' ? 'video/mp4' : mimeType,
+      fileSizeBytes: item.Size,
+      provider: 'Backblaze B2',
+      bucket: env.B2_REELS_BUCKET || 'studio-public-reels',
+      createdAt: item.LastModified || new Date().toISOString(),
+      url: `https://zmedia.zorviktech.com/reels/${item.Key}`,
+    })
+  })
+
+  const allDeliverables = [...b2Private, ...b2Other]
+  allDeliverables.forEach((item) => {
+    b2DeliverablesBytes += item.Size
+    const { mediaType, mimeType } = inferMediaTypeAndMime(item.Key)
+    recentMedia.push({
+      id: item.Key,
+      title: item.Key.split('/').pop() || 'Deliverable',
+      objectKey: item.Key,
+      mediaType,
+      mimeType,
+      fileSizeBytes: item.Size,
+      provider: 'Backblaze B2',
+      bucket: env.B2_PRIVATE_BUCKET || 'studio-private-deliverables',
+      createdAt: item.LastModified || new Date().toISOString(),
+      url: `https://zmedia.zorviktech.com/deliverables/${item.Key}`,
+    })
+  })
+
+  recentMedia.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+
+  const r2Bytes = r2PhotosBytes + r2SiteAssetsBytes
+  const b2Bytes = b2FilmsBytes + b2ReelsBytes + b2DeliverablesBytes
   const totalBytes = r2Bytes + b2Bytes
 
   return {
@@ -624,13 +752,30 @@ async function handleTenantStorageDetails(tenantId, env) {
     totalGb: Number((totalBytes / (1024 * 1024 * 1024)).toFixed(2)),
     r2Bytes,
     b2Bytes,
+    r2: {
+      photosBytes: r2PhotosBytes,
+      photosCount: r2Gallery.length,
+      siteAssetsBytes: r2SiteAssetsBytes,
+      siteAssetsCount: r2Site.length,
+      totalBytes: r2Bytes,
+    },
+    b2: {
+      filmsBytes: b2FilmsBytes,
+      filmsCount: b2Films.length,
+      reelsBytes: b2ReelsBytes,
+      reelsCount: b2Reels.length,
+      deliverablesBytes: b2DeliverablesBytes,
+      deliverablesCount: allDeliverables.length,
+      totalBytes: b2Bytes,
+    },
     counts: {
       photos: r2Gallery.length,
       siteAssets: r2Site.length,
       films: b2Films.length,
       reels: b2Reels.length,
-      deliverables: b2Private.length,
+      deliverables: allDeliverables.length,
     },
+    recentMedia,
   }
 }
 

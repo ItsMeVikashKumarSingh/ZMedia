@@ -1,4 +1,9 @@
-﻿## VERSION 0.9.2 (2026-10-10) - Pure S3 Physical Storage Scans & Plan Quota Reconciliation
+## VERSION 0.9.3 (2026-10-11) - Centralized Storage SSoT & Tenant Media Catalog
+- **Fixed `handleTenantStorageDetails`**: Removed undeclared `b2Gallery` reference that previously triggered 500 ReferenceError on tenant storage detail queries.
+- **Structured Tenant Storage Breakdown**: Enhanced `/api/storage/tenant/:tenantId` to return deep multi-cloud metrics (`r2`, `b2`, `counts`, `totalBytes`, `totalGb`) and complete `recentMedia` catalog containing scanned physical S3 objects with public delivery URLs and MIME categorization.
+- **Downstream Decoupling in `/api/storage/overview`**: Exposed `r2TenantBytesMap` and `b2TenantBytesMap` dictionaries to allow consumers (`Zorvik-Tech`, `ZStudio`) to ingest authoritative physical storage data without maintaining separate S3 credentials.
+
+## VERSION 0.9.2 (2026-10-10) - Pure S3 Physical Storage Scans & Plan Quota Reconciliation
 - **Physical Multi-Cloud Scan Decoupling**: Removed non-existent studio-public-gallery scans from Backblaze B2, enforcing exact separation where Cloudflare R2 holds gallery images and Backblaze B2 hosts private deliverables and video assets.
 - **Accurate Quota Calculation**: Resolved 5 GB fallback bug for non-storage projects; plans and project overrides with storage_gb: 0 or include_storage: false now strictly return 0 GB allocated.
 
