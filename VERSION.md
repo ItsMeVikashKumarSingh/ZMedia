@@ -1,3 +1,10 @@
+## VERSION 0.9.4 (2026-11-01) - Comprehensive Edge Security & Multi-Tenant Routing Test Suite
+- **Automated Security & Preflight Test Suite (`test/security.test.js`)**:
+  - Implemented 106 automated tests covering CORS `OPTIONS` preflight headers across 100+ parameterized origin permutations.
+  - Added tests for `/health` and root status contracts, HTTP method compliance, and service identification.
+  - Verified multi-tenant route isolation, rejecting malformed buckets, path traversal attempts (`/../../etc/passwd`), and paths omitting tenant scoping.
+  - Maintained 100% test pass rate (121/121 tests) and strict ESLint compliance (`npm run lint`).
+
 ## VERSION 0.9.3 (2026-10-11) - Centralized Storage SSoT & Tenant Media Catalog
 - **Fixed `handleTenantStorageDetails`**: Removed undeclared `b2Gallery` reference that previously triggered 500 ReferenceError on tenant storage detail queries.
 - **Structured Tenant Storage Breakdown**: Enhanced `/api/storage/tenant/:tenantId` to return deep multi-cloud metrics (`r2`, `b2`, `counts`, `totalBytes`, `totalGb`) and complete `recentMedia` catalog containing scanned physical S3 objects with public delivery URLs and MIME categorization.
